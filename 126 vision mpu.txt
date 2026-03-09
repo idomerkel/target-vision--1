@@ -1,0 +1,117 @@
+// ==========================================
+    // PARALLEL KINEMATIC DIAGNOSTIC ENGINE (IMU)
+    // ==========================================
+    
+    const KINEMATIC_BATCH_SIZE = 25; // ~400ms rolling window at 60Hz
+    let kinematicBuffer = [];
+    let latestPhysicalMistake = null;
+    let lastShotTime = 0;
+
+    // Translated Thresholds (from raw Arduino MPU to Web API m/s^2 and deg/s)
+    const GYRO_SHOT_THRESHOLD = 80;   // Massive spike indicates gunshot
+    const ACCEL_SHOT_THRESHOLD = 15;  // Massive spike indicates gunshot
+    const GYRO_MOVE_THRESH = 10.0;    // Translated from your 800 raw threshold
+    const ACCEL_MOVE_THRESH = 1.5;    // Translated from your 2000 raw threshold
+
+    // Mistake Database translated from your Arduino C++ code
+    const mistakeDB = [
+        { name: "Jerking the trigger", patterns: ["Down", "Pitch"] },
+        { name: "Flinching/anticipating", patterns: ["Down", "Pitch"] },
+        { name: "Inconsistent finger placement", patterns: ["Left", "Yaw", "Right"] },
+        { name: "Poor grip/stance", patterns: ["Left", "Right", "Roll"] },
+        { name: "Not following through", patterns: ["Down", "Pitch"] },
+        { name: "Canting firearm", patterns: ["Roll"] },
+        { name: "Fatigue/shaking", patterns: ["Up", "Down", "Left", "Right"] }
+    ];
+
+    // 1. Request Sensor Permissions (Required for modern browsers)
+    function enableSensors() {
+        if (typeof DeviceMotionEvent.requestPermission === 'function') {
+            DeviceMotionEvent.requestPermission()
+                .then(permissionState => {
+                    if (permissionState === 'granted') {
+                        window.addEventListener('devicemotion', handleMotion);
+                    }
+                })
+                .catch(console.error);
+        } else {
+            window.addEventListener('devicemotion', handleMotion); // Android usually doesn't need explicit permission
+        }
+    }
+
+    // 2. The Rolling Buffer and Shot Detection
+    function handleMotion(event) {
+        if (!isTracking) return; // Only track when session is active
+
+        let ax = event.acceleration.x || 0;
+        let ay = event.acceleration.y || 0;
+        let az = event.acceleration.z || 0;
+        let gx = event.rotationRate.alpha || 0; // Roll
+        let gy = event.rotationRate.beta || 0;  // Pitch
+        let gz = event.rotationRate.gamma || 0; // Yaw
+
+        let now = Date.now();
+
+        // Push to rolling buffer
+        kinematicBuffer.push({ax, ay, az, gx, gy, gz});
+        if (kinematicBuffer.length > KINEMATIC_BATCH_SIZE) {
+            kinematicBuffer.shift(); // Keep buffer sized at BATCH_SIZE
+        }
+
+        // 3. Detect the shot spike (debounce by 500ms so recoil doesn't double-trigger)
+        if (now - lastShotTime > 500) {
+            if (Math.abs(gx) > GYRO_SHOT_THRESHOLD || Math.abs(gy) > GYRO_SHOT_THRESHOLD || Math.abs(ax) > ACCEL_SHOT_THRESHOLD) {
+                lastShotTime = now;
+                analyzePreShotWindow();
+            }
+        }
+    }
+
+    // 4. Analyze the micro-movements right before the shot
+    function analyzePreShotWindow() {
+        let down = false, up = false, left = false, right = false;
+        let pitch = false, yaw = false, roll = false;
+        let moveString = "";
+
+        // Check the frames *before* the recoil spiked
+        let preShotFrames = kinematicBuffer.slice(0, KINEMATIC_BATCH_SIZE - 5); 
+
+        for (let s of preShotFrames) {
+            if (s.ax > ACCEL_MOVE_THRESH) right = true;
+            if (s.ax < -ACCEL_MOVE_THRESH) left = true;
+            if (s.az > ACCEL_MOVE_THRESH) up = true;
+            if (s.az < -ACCEL_MOVE_THRESH) down = true;
+            
+            if (Math.abs(s.gx) > GYRO_MOVE_THRESH) roll = true;
+            if (Math.abs(s.gy) > GYRO_MOVE_THRESH) pitch = true;
+            if (Math.abs(s.gz) > GYRO_MOVE_THRESH) yaw = true;
+        }
+
+        if (down) moveString += "Down,";
+        if (up) moveString += "Up,";
+        if (left) moveString += "Left,";
+        if (right) moveString += "Right,";
+        if (pitch) moveString += "Pitch,";
+        if (yaw) moveString += "Yaw,";
+        if (roll) moveString += "Roll,";
+
+        // 5. Match against Mistake Database
+        let bestMatch = null;
+        let maxScore = 0;
+
+        for (let mistake of mistakeDB) {
+            let score = 0;
+            for (let pattern of mistake.patterns) {
+                if (moveString.includes(pattern)) score += 10;
+            }
+            if (score > maxScore) {
+                maxScore = score;
+                bestMatch = mistake.name;
+            }
+        }
+        
+        // Save it to a global variable so the OpenCV loop can grab it when it finds a hole
+        if (bestMatch && maxScore > 0) {
+            latestPhysicalMistake = bestMatch;
+        }
+    }
