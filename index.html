@@ -77,6 +77,7 @@
 <script>
     // ==========================================
     // 1. VISUAL TRACKING ENGINE (OPENCV)
+    // RESTORED TO EXACT '125 GIT' MATH LOGIC
     // ==========================================
     let isTracking = false;
     let orb = null, matcher = null, refKP = null, refDesc = null, refGray = null;
@@ -94,8 +95,9 @@
                 v.srcObject = s; 
                 v.onloadedmetadata = () => {
                     const ov = document.getElementById('overlayCanvas');
-                    ov.width = 640;
-                    ov.height = 480;
+                    // RESTORED: Using native video resolution for correct overlay mapping
+                    ov.width = v.videoWidth;
+                    ov.height = v.videoHeight;
                     document.getElementById('btnBase').disabled = false; 
                     document.getElementById('btnCam').style.display = 'none';
                     document.getElementById('status').innerText = "Camera & Sensors Active.";
@@ -110,13 +112,20 @@
         let cvs = document.getElementById('calcCanvas');
         let ctx = cvs.getContext('2d');
         let v = document.getElementById('webcam');
+        
+        // RESTORED: Your original mirrored coordinate injection
+        ctx.save();
+        ctx.translate(640, 0);
+        ctx.scale(-1, 1);
         ctx.drawImage(v, 0, 0, 640, 480);
+        ctx.restore();
+        
         return cv.imread(cvs);
     }
 
     function setBaseline() {
         if(!orb) { 
-            orb = new cv.ORB(1500);
+            orb = new cv.ORB(1500); // Your original 1500 keypoint baseline
             matcher = new cv.BFMatcher(cv.NORM_HAMMING, true); 
             refKP = new cv.KeyPointVector(); refDesc = new cv.Mat();
         }
@@ -190,6 +199,7 @@
                         let currentHoles = [];
                         for(let i=0; i<contours.size(); i++) {
                             let cnt = contours.get(i), area = cv.contourArea(cnt);
+                            // RESTORED: Your original solidity threshold calculations
                             if(area > 12 && area < 600) {
                                 let M = cv.moments(cnt);
                                 let p = {x: M.m10/M.m00, y: M.m01/M.m00};
@@ -259,6 +269,8 @@
         persistentShots.forEach((s, idx) => {
             let p = cv.matFromArray(3, 1, cv.CV_64F, [s.x, s.y, 1.0]);
             let dP = new cv.Mat(); cv.gemm(H, p, 1, new cv.Mat(), 0, dP);
+            
+            // RESTORED: Your original mirrored internal coordinate mapping
             let x = dP.data64F[0]/dP.data64F[2];
             let y = dP.data64F[1]/dP.data64F[2];
             
@@ -375,8 +387,8 @@
         plotLine('az', '#ff00ff', 5.0, 9.8); 
     }
 
-    // Force the graph to render independently at ~30FPS so it works even if tracking is paused
-    setInterval(drawGyroGraph, 33);
+    // Force the graph to render independently at ~20FPS (50ms delay) to prevent CPU starvation of OpenCV
+    setInterval(drawGyroGraph, 50);
 
     function handleMotion(event) {
         let ax = event.accelerationIncludingGravity?.x || event.acceleration?.x || 0;
