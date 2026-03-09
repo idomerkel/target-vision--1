@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Smart Target - Kinematic Fusion</title>
+    <title>Smart Target - Noise Filtered Kinematic Engine</title>
     <script>
         var Module = { onRuntimeInitialized: function() { onOpenCvReady(); } };
     </script>
@@ -29,8 +29,11 @@
         .feed-col h3 { font-size: 13px; color: #aaa; margin: 0 0 10px 0; border-bottom: 1px solid #333; padding-bottom: 5px; }
         
         /* Cards */
-        .card { background: #222; border-radius: 8px; padding: 10px; border-left: 4px solid #444; margin-bottom: 10px; }
-        .mistake { display: flex; justify-content: space-between; font-size: 12px; margin-top: 5px; }
+        .card { background: #222; border-radius: 8px; padding: 10px; border-left: 4px solid #444; margin-bottom: 10px; animation: fadeIn 0.3s ease; }
+        .card h4 { margin: 0 0 10px 0; color: #ffcc00; font-size: 14px; text-transform: uppercase; }
+        .mistake { display: flex; justify-content: space-between; border-bottom: 1px solid #333; padding: 6px 0; font-size: 13px; }
+        .prob { font-weight: bold; font-size: 11px; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(15px); } to { opacity: 1; transform: translateX(0); } }
     </style>
 </head>
 <body>
@@ -40,12 +43,12 @@
         <p id="status">Loading WASM...</p>
         <div class="video-box" id="vbox">
             <video id="webcam" autoplay playsinline muted></video>
-            <canvas id="overlayCanvas" class="overlay"></canvas>
+            <canvas id="overlayCanvas" class="overlay" width="640" height="480"></canvas>
         </div>
         <div style="margin-top: 15px; display: flex; flex-wrap: wrap; justify-content: center;">
-            <button id="btnCam" onclick="startCamera(); enableSensors();">Start Camera</button>
+            <button id="btnCam" onclick="startCamera()">Start Camera</button>
             <button id="btnBase" onclick="setBaseline()" disabled>1. Lock Baseline</button>
-            <button id="btnTrack" onclick="toggleTracking();" disabled>2. Start Session</button>
+            <button id="btnTrack" onclick="toggleTracking()" disabled>2. Start Session</button>
         </div>
         <canvas id="debugCanvas" class="debug-view"></canvas>
     </div>
@@ -62,11 +65,11 @@
         
         <div class="split-view">
             <div class="feed-col">
-                <h3>Visual Tracking (Camera)</h3>
+                <h3>Visual Tracking</h3>
                 <div id="shotList"></div>
             </div>
             <div class="feed-col">
-                <h3>Kinematic Errors (Gyro)</h3>
+                <h3>Kinematic Errors</h3>
                 <div id="kinematicList"></div>
             </div>
         </div>
@@ -76,12 +79,13 @@
 
 <script>
     // ==========================================
-    // 1. VISUAL TRACKING ENGINE (OPENCV)
-    // RESTORED TO EXACT '125 GIT' MATH LOGIC
+    // 1. NOISE FILTERED VISION ENGINE (OPENCV)
     // ==========================================
     let isTracking = false;
     let orb = null, matcher = null, refKP = null, refDesc = null, refGray = null;
     let cropSize = 0, targetRadius = 0, persistentShots = [], candidates = [], blacklist = [];
+    
+    // Exact settings from the better vision model
     const PROXIMITY = 15.0, REQ_FRAMES = 5; 
 
     function onOpenCvReady() {
@@ -91,43 +95,30 @@
     function startCamera() {
         navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: 640, height: 480 } })
             .then(s => { 
-                const v = document.getElementById('webcam');
-                v.srcObject = s; 
-                v.onloadedmetadata = () => {
-                    const ov = document.getElementById('overlayCanvas');
-                    // RESTORED: Using native video resolution for correct overlay mapping
-                    ov.width = v.videoWidth;
-                    ov.height = v.videoHeight;
-                    document.getElementById('btnBase').disabled = false; 
-                    document.getElementById('btnCam').style.display = 'none';
-                    document.getElementById('status').innerText = "Camera & Sensors Active.";
-                };
+                document.getElementById('webcam').srcObject = s; 
+                document.getElementById('btnBase').disabled = false; 
+                document.getElementById('btnCam').style.display = 'none';
+                document.getElementById('status').innerText = "Camera Active.";
+                
+                // Wake up sensors instantly
+                enableSensors(); 
             }).catch(e => {
                 document.getElementById('status').innerText = "Camera Error.";
                 console.error(e);
             });
     }
 
+    // Exact grab function from your better version (no mirroring)
     function grab() {
         let cvs = document.getElementById('calcCanvas');
-        let ctx = cvs.getContext('2d');
-        let v = document.getElementById('webcam');
-        
-        // RESTORED: Your original mirrored coordinate injection
-        ctx.save();
-        ctx.translate(640, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(v, 0, 0, 640, 480);
-        ctx.restore();
-        
+        cvs.getContext('2d').drawImage(document.getElementById('webcam'), 0,0,640,480);
         return cv.imread(cvs);
     }
 
     function setBaseline() {
         if(!orb) { 
-            orb = new cv.ORB(1500); // Your original 1500 keypoint baseline
-            matcher = new cv.BFMatcher(cv.NORM_HAMMING, true); 
-            refKP = new cv.KeyPointVector(); refDesc = new cv.Mat();
+            orb = new cv.ORB(1500); matcher = new cv.BFMatcher(cv.NORM_HAMMING, true); 
+            refKP = new cv.KeyPointVector(); refDesc = new cv.Mat(); 
         }
         let frame = grab();
         let gray = new cv.Mat(), thresh = new cv.Mat();
@@ -135,6 +126,7 @@
         cv.adaptiveThreshold(gray, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 15, 5);
         let contours = new cv.MatVector(), hierarchy = new cv.Mat();
         cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+        
         let best = null, maxA = 0;
         for(let i=0; i<contours.size(); i++) {
             let a = cv.contourArea(contours.get(i));
@@ -144,9 +136,7 @@
 
         targetRadius = Math.round(best.radius);
         cropSize = targetRadius * 2 + 60;
-        let rect = new cv.Rect(Math.max(0, best.center.x - cropSize/2), Math.max(0, best.center.y - cropSize/2), 
-                               Math.min(640 - Math.max(0, best.center.x - cropSize/2), cropSize), 
-                               Math.min(480 - Math.max(0, best.center.y - cropSize/2), cropSize));
+        let rect = new cv.Rect(Math.max(0, best.center.x - cropSize/2), Math.max(0, best.center.y - cropSize/2), cropSize, cropSize);
         let roi = frame.roi(rect);
         if(refGray) refGray.delete();
         refGray = new cv.Mat();
@@ -159,7 +149,7 @@
         document.getElementById('debugCanvas').width = roi.cols;
         document.getElementById('debugCanvas').height = roi.rows;
         document.getElementById('btnTrack').disabled = false;
-        document.getElementById('status').innerText = "Baseline Locked. Ready for Session.";
+        document.getElementById('status').innerText = "Baseline Locked.";
         frame.delete(); gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete(); mask.delete(); roi.delete();
     }
 
@@ -167,53 +157,69 @@
         if(!isTracking) return;
         let frame = grab();
         let grayLive = new cv.Mat(), liveKP = new cv.KeyPointVector(), liveDesc = new cv.Mat(), matches = new cv.DMatchVector();
+        
         try {
             cv.cvtColor(frame, grayLive, cv.COLOR_RGBA2GRAY);
             orb.detectAndCompute(grayLive, new cv.Mat(), liveKP, liveDesc);
+
             if(!liveDesc.empty()) {
                 matcher.match(refDesc, liveDesc, matches);
                 let good = [];
                 for(let i=0; i<matches.size(); i++) { if(matches.get(i).distance < 48) good.push(matches.get(i)); }
+                
                 if(good.length > 10) {
                     let srcP = [], dstP = [];
                     for(let m of good) { srcP.push(refKP.get(m.queryIdx).pt.x, refKP.get(m.queryIdx).pt.y); dstP.push(liveKP.get(m.trainIdx).pt.x, liveKP.get(m.trainIdx).pt.y); }
                     let matSrc = cv.matFromArray(good.length, 1, cv.CV_32FC2, srcP), matDst = cv.matFromArray(good.length, 1, cv.CV_32FC2, dstP);
                     let H = cv.findHomography(matSrc, matDst, cv.RANSAC, 5.0);
+
                     if(!H.empty()) {
-                        let invH = new cv.Mat();
-                        cv.invert(H, invH, cv.DECOMP_LU);
+                        let invH = new cv.Mat(); cv.invert(H, invH, cv.DECOMP_LU);
                         let warped = new cv.Mat(); cv.warpPerspective(grayLive, warped, invH, new cv.Size(refGray.cols, refGray.rows));
+                        
+                        // --- NOISE REDUCTION PIPELINE (From your better version) ---
                         let refBlur = new cv.Mat(), warpedBlur = new cv.Mat();
                         cv.GaussianBlur(refGray, refBlur, new cv.Size(3, 3), 0);
                         cv.GaussianBlur(warped, warpedBlur, new cv.Size(3, 3), 0);
+
                         let diff = new cv.Mat(), thresh = new cv.Mat();
                         cv.absdiff(refBlur, warpedBlur, diff);
+                        
+                        // Noise filter threshold
                         cv.threshold(diff, thresh, 40, 255, cv.THRESH_BINARY);
+
                         let liveMask = cv.Mat.zeros(refGray.rows, refGray.cols, cv.CV_8UC1);
                         cv.circle(liveMask, new cv.Point(refGray.cols/2, refGray.rows/2), targetRadius - 15, new cv.Scalar(255), -1);
                         let maskedThresh = new cv.Mat();
                         thresh.copyTo(maskedThresh, liveMask);
+
                         cv.imshow('debugCanvas', maskedThresh);
+
                         let contours = new cv.MatVector(), hier = new cv.Mat();
                         cv.findContours(maskedThresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                        
                         let currentHoles = [];
                         for(let i=0; i<contours.size(); i++) {
                             let cnt = contours.get(i), area = cv.contourArea(cnt);
-                            // RESTORED: Your original solidity threshold calculations
+                            
+                            // Specific area limits
                             if(area > 12 && area < 600) {
                                 let M = cv.moments(cnt);
                                 let p = {x: M.m10/M.m00, y: M.m01/M.m00};
                                 if(blacklist.some(b => Math.hypot(b.x-p.x, b.y-p.y) < PROXIMITY)) continue;
-                                let hull = new cv.Mat();
-                                cv.convexHull(cnt, hull);
+
+                                let hull = new cv.Mat(); cv.convexHull(cnt, hull);
                                 let solidity = area / (cv.contourArea(hull) || 1);
                                 hull.delete();
+
+                                // Stricter Convexity Audit
                                 if(solidity > 0.86) currentHoles.push(p);
-                                else if(solidity < 0.75) blacklist.push(p);
+                                else if(solidity < 0.75) blacklist.push(p); 
                             }
                         }
                         processShots(currentHoles);
                         drawOverlay(H);
+                        
                         invH.delete(); warped.delete(); diff.delete(); thresh.delete(); 
                         refBlur.delete(); warpedBlur.delete(); liveMask.delete(); maskedThresh.delete(); 
                         contours.delete(); hier.delete(); H.delete();
@@ -232,7 +238,7 @@
             if(persistentShots.some(s => Math.hypot(s.x-h.x, s.y-h.y) < PROXIMITY)) continue;
             let c = candidates.find(can => Math.hypot(can.x-h.x, can.y-h.y) < PROXIMITY);
             if(c) { 
-                c.f++;
+                c.f++; 
                 if(c.f >= REQ_FRAMES) {
                     persistentShots.push({id: Date.now(), x:h.x, y:h.y, d: getDiag(h.x, h.y)});
                     refreshList();
@@ -247,41 +253,36 @@
     function getDiag(x, y) {
         let dx = x - refGray.cols/2, dy = refGray.rows/2 - y;
         let a = Math.atan2(dy, dx) * (180/Math.PI); if(a < 0) a += 360;
-        if(a > 45 && a <= 135) return {z:"High", m:[{n:"Riding Recoil", p:"High"},{n:"Heeling", p:"Med"}]};
-        if(a > 135 && a <= 225) return {z:"Left", m:[{n:"Trigger Depth", p:"High"},{n:"Grip Tension", p:"Med"}]};
-        if(a > 225 && a <= 315) return {z:"Low", m:[{n:"Trigger Jerking", p:"High"},{n:"Anticipation", p:"Med"}]};
-        return {z:"Right", m:[{n:"Finger Tip Pressure", p:"High"},{n:"Thumb Pressure", p:"Med"}]};
+        if(a > 45 && a <= 135) return {z:"High", m:[{n:"Riding Recoil", p:"High"},{n:"Heeling", p:"Med"},{n:"Breathing", p:"Low"}]};
+        if(a > 135 && a <= 225) return {z:"Left", m:[{n:"Trigger Depth", p:"High"},{n:"Grip Tension", p:"Med"},{n:"Wrist Roll", p:"Low"}]};
+        if(a > 225 && a <= 315) return {z:"Low", m:[{n:"Trigger Jerking", p:"High"},{n:"Anticipation", p:"Med"},{n:"Flinching", p:"Low"}]};
+        return {z:"Right", m:[{n:"Finger Tip Pressure", p:"High"},{n:"Thumb Pressure", p:"Med"},{n:"Cheek Weld", p:"Low"}]};
     }
 
     function refreshList() {
         const list = document.getElementById('shotList');
         list.innerHTML = persistentShots.slice().reverse().map((s, i) => `
             <div class="card" style="border-left-color: #00aaff;">
-                <h4 style="margin:0 0 5px 0; font-size:13px;">Shot #${persistentShots.length-i}: ${s.d.z} Zone</h4>
-                ${s.d.m.map(m => `<div class="mistake"><span>${m.n}</span><span style="color:${m.p==='High'?'#ff3b30':'#00ff00'}">${m.p}</span></div>`).join('')}
+                <h4>Shot #${persistentShots.length-i}: ${s.d.z} Zone</h4>
+                ${s.d.m.map(m => `<div class="mistake"><span>${m.n}</span><span class="prob" style="color:${m.p==='High'?'#ff3b30':'#00ff00'}">${m.p}</span></div>`).join('')}
             </div>
         `).join('');
     }
 
     function drawOverlay(H) {
         let ctx = document.getElementById('overlayCanvas').getContext('2d');
-        ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+        ctx.clearRect(0,0,640,480);
         persistentShots.forEach((s, idx) => {
             let p = cv.matFromArray(3, 1, cv.CV_64F, [s.x, s.y, 1.0]);
             let dP = new cv.Mat(); cv.gemm(H, p, 1, new cv.Mat(), 0, dP);
-            
-            // RESTORED: Your original mirrored internal coordinate mapping
-            let x = dP.data64F[0]/dP.data64F[2];
-            let y = dP.data64F[1]/dP.data64F[2];
-            
+            let x = dP.data64F[0]/dP.data64F[2], y = dP.data64F[1]/dP.data64F[2];
             ctx.beginPath(); ctx.arc(x,y,10,0,6.28); ctx.fillStyle="rgba(0,255,0,0.7)"; ctx.fill();
-            ctx.strokeStyle="white"; ctx.lineWidth=2; ctx.stroke();
-            ctx.fillStyle="white"; ctx.font="bold 12px sans-serif"; ctx.fillText("#"+(idx+1), x+14, y);
+            ctx.strokeStyle="white"; ctx.stroke();
+            ctx.fillStyle="white"; ctx.font="11px sans-serif"; ctx.fillText("#"+(idx+1), x+14, y);
             p.delete(); dP.delete();
         });
     }
 
-    // Toggle button changes text and color to indicate Pause/Resume state
     function toggleTracking() { 
         isTracking = !isTracking;
         let btn = document.getElementById('btnTrack');
@@ -294,7 +295,7 @@
         } else {
             document.getElementById('status').innerText = "Session Paused.";
             btn.innerText = "Resume Session";
-            btn.style.backgroundColor = "#00aaff"; 
+            btn.style.backgroundColor = "#ff3b30"; 
         }
     }
 
@@ -323,21 +324,28 @@
     ];
 
     function enableSensors() {
+        const statusText = document.getElementById('status');
+        let sensorTestPassed = false;
+
+        window.addEventListener('devicemotion', function testFire(e) {
+            if (e.accelerationIncludingGravity || e.rotationRate) {
+                sensorTestPassed = true;
+            }
+            window.removeEventListener('devicemotion', testFire); 
+        });
+
+        setTimeout(() => {
+            if (!sensorTestPassed) {
+                alert("🚨 SENSOR BLOCK DETECTED! 🚨\n\nAndroid is silently blocking your gyroscope.\n\n1. Ensure your URL starts with HTTPS.\n2. Check Chrome Site Settings -> Motion Sensors.");
+                statusText.innerText = "SENSOR BLOCKED BY BROWSER.";
+                statusText.style.color = "#ff3b30";
+            } else {
+                window.addEventListener('devicemotion', handleMotion); 
+            }
+        }, 1000);
+
         if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-            DeviceMotionEvent.requestPermission()
-                .then(permissionState => {
-                    if (permissionState === 'granted') {
-                        window.addEventListener('devicemotion', handleMotion);
-                    } else {
-                        document.getElementById('status').innerText = "Sensor Permission Denied.";
-                    }
-                })
-                .catch(err => {
-                    document.getElementById('status').innerText = "Sensor Error (Requires HTTPS).";
-                    console.error(err);
-                });
-        } else {
-            window.addEventListener('devicemotion', handleMotion); 
+            DeviceMotionEvent.requestPermission().catch(console.error);
         }
     }
 
@@ -357,8 +365,6 @@
             ctx.fillStyle = "#ffaa00";
             ctx.font = "11px sans-serif";
             ctx.fillText("Waiting for Sensor Data...", 10, 30);
-            ctx.fillStyle = "#ff4444";
-            ctx.fillText("If this doesn't disappear, ensure you are on HTTPS", 10, 50);
             return;
         }
 
@@ -387,7 +393,6 @@
         plotLine('az', '#ff00ff', 5.0, 9.8); 
     }
 
-    // Force the graph to render independently at ~20FPS (50ms delay) to prevent CPU starvation of OpenCV
     setInterval(drawGyroGraph, 50);
 
     function handleMotion(event) {
@@ -401,16 +406,13 @@
 
         let now = Date.now();
 
-        // ALWAYS record movement data to keep the live graph moving
         kinematicBuffer.push({ax, ay, az, gx, gy, gz});
         if (kinematicBuffer.length > KINEMATIC_BATCH_SIZE) {
             kinematicBuffer.shift(); 
         }
 
-        // STOP HERE if the session hasn't started or is paused
         if (!isTracking) return; 
 
-        // Shot analysis logic only runs if session is actively tracking
         if (now - lastShotTime > 500) {
             if (Math.abs(gx) > GYRO_SHOT_THRESHOLD || Math.abs(gy) > GYRO_SHOT_THRESHOLD || Math.abs(ax) > ACCEL_SHOT_THRESHOLD) {
                 lastShotTime = now;
@@ -468,7 +470,7 @@
         
         const cardHTML = `
             <div class="card" style="border-left-color: ${cardColor};">
-                <strong style="font-size:12px; color:#aaa;">Event K-${kinematicShotCounter}</strong>
+                <h4 style="margin:0 0 5px 0; font-size:13px; color: ${cardColor};">Event K-${kinematicShotCounter}</h4>
                 <div style="font-size: 13px; font-weight: bold; margin-top: 4px; color:${cardColor};">
                     ${bestMatch}
                 </div>
