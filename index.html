@@ -16,14 +16,14 @@
         .video-box { position: relative; width: 640px; height: 480px; max-width: 95vw; max-height: 50vh; border: 3px solid #444; border-radius: 12px; overflow: hidden; background: #000; flex-shrink: 0; }
         video, canvas.overlay { position: absolute; width: 100%; height: 100%; top: 0; left: 0; object-fit: fill; }
         canvas.overlay { pointer-events: none; z-index: 10; }
-        button { background: #ff3b30; color: white; border: none; padding: 12px 24px; font-size: 14px; cursor: pointer; border-radius: 6px; font-weight: bold; margin: 5px; }
+        button { background: #ff3b30; color: white; border: none; padding: 12px 24px; font-size: 14px; cursor: pointer; border-radius: 6px; font-weight: bold; margin: 5px; transition: background 0.3s; }
         #status { font-weight: bold; font-size: 14px; color: #00ff00; margin-bottom: 10px; text-align: center; }
         .debug-view { width: 160px; height: 120px; border: 1px solid #444; background: #000; margin-top: 10px; }
         
         /* Right Column: Dashboard and Data */
         .dashboard { display: flex; width: 400px; flex-direction: column; background: #161616; padding: 15px; overflow-y: auto; border-left: 2px solid #333; }
         .graph-container { width: 100%; height: 120px; background: #000; border: 1px solid #444; border-radius: 6px; margin-bottom: 15px; position: relative; flex-shrink: 0; }
-        .graph-label { position: absolute; top: 5px; left: 5px; font-size: 10px; color: #888; z-index: 20; background: rgba(0,0,0,0.5); padding: 2px 4px; border-radius: 4px;}
+        .graph-label { position: absolute; top: 5px; left: 5px; font-size: 10px; color: #888; z-index: 20; background: rgba(0,0,0,0.6); padding: 4px; border-radius: 4px;}
         .split-view { display: flex; gap: 10px; flex: 1; overflow-y: hidden; }
         .feed-col { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding-right: 5px;}
         .feed-col h3 { font-size: 13px; color: #aaa; margin: 0 0 10px 0; border-bottom: 1px solid #333; padding-bottom: 5px; }
@@ -43,9 +43,9 @@
             <canvas id="overlayCanvas" class="overlay"></canvas>
         </div>
         <div style="margin-top: 15px; display: flex; flex-wrap: wrap; justify-content: center;">
-            <button id="btnCam" onclick="startCamera()">Start Camera</button>
+            <button id="btnCam" onclick="startCamera(); enableSensors();">Start Camera</button>
             <button id="btnBase" onclick="setBaseline()" disabled>1. Lock Baseline</button>
-            <button id="btnTrack" onclick="toggleTracking(); enableSensors();" disabled>2. Start Session</button>
+            <button id="btnTrack" onclick="toggleTracking();" disabled>2. Start Session</button>
         </div>
         <canvas id="debugCanvas" class="debug-view"></canvas>
     </div>
@@ -94,12 +94,11 @@
                 v.srcObject = s; 
                 v.onloadedmetadata = () => {
                     const ov = document.getElementById('overlayCanvas');
-                    // Force the overlay coordinate space to match the OpenCV calculation space
                     ov.width = 640;
                     ov.height = 480;
                     document.getElementById('btnBase').disabled = false; 
                     document.getElementById('btnCam').style.display = 'none';
-                    document.getElementById('status').innerText = "Camera Active.";
+                    document.getElementById('status').innerText = "Camera & Sensors Active.";
                 };
             }).catch(e => {
                 document.getElementById('status').innerText = "Camera Error.";
@@ -111,7 +110,6 @@
         let cvs = document.getElementById('calcCanvas');
         let ctx = cvs.getContext('2d');
         let v = document.getElementById('webcam');
-        // Standard draw without mirroring (for rear-facing cameras on paper targets)
         ctx.drawImage(v, 0, 0, 640, 480);
         return cv.imread(cvs);
     }
@@ -152,7 +150,7 @@
         document.getElementById('debugCanvas').width = roi.cols;
         document.getElementById('debugCanvas').height = roi.rows;
         document.getElementById('btnTrack').disabled = false;
-        document.getElementById('status').innerText = "Baseline Locked.";
+        document.getElementById('status').innerText = "Baseline Locked. Ready for Session.";
         frame.delete(); gray.delete(); thresh.delete(); contours.delete(); hierarchy.delete(); mask.delete(); roi.delete();
     }
 
@@ -271,11 +269,20 @@
         });
     }
 
+    // Toggle button changes text and color to indicate Pause/Resume state
     function toggleTracking() { 
         isTracking = !isTracking;
+        let btn = document.getElementById('btnTrack');
+        
         if(isTracking) {
-            document.getElementById('status').innerText = "Session Active.";
+            document.getElementById('status').innerText = "Session Active (Tracking & Recording).";
+            btn.innerText = "Pause Session";
+            btn.style.backgroundColor = "#ffaa00"; 
             trackingLoop();
+        } else {
+            document.getElementById('status').innerText = "Session Paused.";
+            btn.innerText = "Resume Session";
+            btn.style.backgroundColor = "#00aaff"; 
         }
     }
 
@@ -309,9 +316,14 @@
                 .then(permissionState => {
                     if (permissionState === 'granted') {
                         window.addEventListener('devicemotion', handleMotion);
+                    } else {
+                        document.getElementById('status').innerText = "Sensor Permission Denied.";
                     }
                 })
-                .catch(console.error);
+                .catch(err => {
+                    document.getElementById('status').innerText = "Sensor Error (Requires HTTPS).";
+                    console.error(err);
+                });
         } else {
             window.addEventListener('devicemotion', handleMotion); 
         }
@@ -323,16 +335,23 @@
         const ctx = canvas.getContext('2d');
         
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (kinematicBuffer.length === 0) return;
 
-        // Draw Center Zero-Line
+        // Center line
         ctx.strokeStyle = '#333';
         ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(0, canvas.height/2); ctx.lineTo(canvas.width, canvas.height/2); ctx.stroke();
 
+        if (kinematicBuffer.length === 0) {
+            ctx.fillStyle = "#ffaa00";
+            ctx.font = "11px sans-serif";
+            ctx.fillText("Waiting for Sensor Data...", 10, 30);
+            ctx.fillStyle = "#ff4444";
+            ctx.fillText("If this doesn't disappear, ensure you are on HTTPS", 10, 50);
+            return;
+        }
+
         const step = canvas.width / KINEMATIC_BATCH_SIZE;
         
-        // Helper to plot lines with specific visual scaling
         function plotLine(key, color, scaleMultiplier, offset = 0) {
             ctx.strokeStyle = color;
             ctx.lineWidth = 1.5;
@@ -348,21 +367,18 @@
             ctx.stroke();
         }
 
-        // 1. Plot Gyroscope (Rotation in deg/s). We scale it down slightly so spikes fit on screen.
-        plotLine('gx', '#ff4444', 0.5); // Roll
-        plotLine('gy', '#44ff44', 0.5); // Pitch
-        plotLine('gz', '#4444ff', 0.5); // Yaw
-
-        // 2. Plot Accelerometer (Translation in m/s^2). Scaled up massively because it's a smaller unit.
-        // We offset 'az' by 9.8 to subtract Earth's gravity so it rests near the center zero-line.
+        plotLine('gx', '#ff4444', 0.5); 
+        plotLine('gy', '#44ff44', 0.5); 
+        plotLine('gz', '#4444ff', 0.5); 
         plotLine('ax', '#ffaa00', 5.0); 
         plotLine('ay', '#00ffff', 5.0); 
         plotLine('az', '#ff00ff', 5.0, 9.8); 
     }
 
-    function handleMotion(event) {
-        if (!isTracking) return; 
+    // Force the graph to render independently at ~30FPS so it works even if tracking is paused
+    setInterval(drawGyroGraph, 33);
 
+    function handleMotion(event) {
         let ax = event.accelerationIncludingGravity?.x || event.acceleration?.x || 0;
         let ay = event.accelerationIncludingGravity?.y || event.acceleration?.y || 0;
         let az = event.accelerationIncludingGravity?.z || event.acceleration?.z || 0;
@@ -373,15 +389,16 @@
 
         let now = Date.now();
 
+        // ALWAYS record movement data to keep the live graph moving
         kinematicBuffer.push({ax, ay, az, gx, gy, gz});
         if (kinematicBuffer.length > KINEMATIC_BATCH_SIZE) {
             kinematicBuffer.shift(); 
         }
 
-        // Update the graph every frame
-        drawGyroGraph();
+        // STOP HERE if the session hasn't started or is paused
+        if (!isTracking) return; 
 
-        // Detect the massive shockwave of the dry fire / live fire
+        // Shot analysis logic only runs if session is actively tracking
         if (now - lastShotTime > 500) {
             if (Math.abs(gx) > GYRO_SHOT_THRESHOLD || Math.abs(gy) > GYRO_SHOT_THRESHOLD || Math.abs(ax) > ACCEL_SHOT_THRESHOLD) {
                 lastShotTime = now;
@@ -399,7 +416,6 @@
         let preShotFrames = kinematicBuffer.slice(0, startIndex); 
 
         for (let s of preShotFrames) {
-            // Adjust Z for gravity during analysis
             let adjustedZ = (s.az || 0) - 9.8;
 
             if (s.ax > ACCEL_MOVE_THRESH) right = true;
